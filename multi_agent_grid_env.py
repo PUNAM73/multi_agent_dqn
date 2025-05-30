@@ -1,69 +1,102 @@
 import numpy as np
+import random
 
 class MultiAgentGridEnv:
     def __init__(self, grid_size=5, num_agents=2):
         self.grid_size = grid_size
         self.num_agents = num_agents
-        self.pickup_locations = [(0, 0), (0, 2), (4, 0), (2, 4)]
-        self.dropoff_location = (4, 4)
+        self.action_map = {
+            0: (-1, 0),  # up
+            1: (1, 0),   # down
+            2: (0, -1),  # left
+            3: (0, 1),   # right
+            4: (0, 0)    # stay
+        }
         self.reset()
 
     def reset(self):
         self.agent_positions = []
-        self.item_picked = [False] * self.num_agents
-        self.delivered = [False] * self.num_agents
+        self.delivery_positions = []
+        self.done_agents = [False for _ in range(self.num_agents)]
+        self.total_steps = 0
 
         occupied = set()
         for _ in range(self.num_agents):
             while True:
-                pos = (np.random.randint(0, self.grid_size), np.random.randint(0, self.grid_size))
-                if pos not in occupied and pos not in self.pickup_locations and pos != self.dropoff_location:
+                pos = (random.randint(0, self.grid_size - 1),
+                       random.randint(0, self.grid_size - 1))
+                if pos not in occupied:
                     self.agent_positions.append(pos)
                     occupied.add(pos)
                     break
-        return self.get_state()
 
-    def get_state(self):
-        return [np.array([pos[0], pos[1], int(pick)]) for pos, pick in zip(self.agent_positions, self.item_picked)]
+        for _ in range(self.num_agents):
+            while True:
+                pos = (random.randint(0, self.grid_size - 1),
+                       random.randint(0, self.grid_size - 1))
+                if pos not in occupied:
+                    self.delivery_positions.append(pos)
+                    occupied.add(pos)
+                    break
+
+        return self._get_obs()
+
+    def _get_obs(self):
+        return [self._get_agent_obs(i) for i in range(self.num_agents)]
+
+    def _get_agent_obs(self, i):
+        return np.array(self.agent_positions[i] + self.delivery_positions[i])
+
+    def _in_bounds(self, pos):
+        return 0 <= pos[0] < self.grid_size and 0 <= pos[1] < self.grid_size
 
     def step(self, actions):
         rewards = [0 for _ in range(self.num_agents)]
-        new_positions = list(self.agent_positions)
-        infos = [{} for _ in range(self.num_agents)]
+        new_positions = []
+        collisions = set()
 
         for i, action in enumerate(actions):
-            r, c = self.agent_positions[i]
-            if action == 0 and r > 0: r -= 1
-            elif action == 1 and r < self.grid_size - 1: r += 1
-            elif action == 2 and c > 0: c -= 1
-            elif action == 3 and c < self.grid_size - 1: c += 1
-            new_positions[i] = (r, c)
+            if self.done_agents[i]:
+                new_positions.append(self.agent_positions[i])
+                continue
 
-        if len(set(new_positions)) < len(new_positions):
-            for i in range(self.num_agents):
-                if new_positions.count(new_positions[i]) > 1:
-                    new_positions[i] = self.agent_positions[i]
-                    rewards[i] -= 10
+            move = self.action_map[action]
+            new_pos = (self.agent_positions[i][0] + move[0],
+                       self.agent_positions[i][1] + move[1])
 
-        self.agent_positions = new_positions
+            if not self._in_bounds(new_pos):
+                rewards[i] -= 10
+                new_positions.append(self.agent_positions[i])
+                continue
+
+            new_positions.append(new_pos)
 
         for i in range(self.num_agents):
-            pos = self.agent_positions[i]
-            pickup_location = self.pickup_locations[i % len(self.pickup_locations)]
+            for j in range(i + 1, self.num_agents):
+                if new_positions[i] == new_positions[j] and not self.done_agents[i] and not self.done_agents[j]:
+                    collisions.add(i)
+                    collisions.add(j)
 
-            if not self.item_picked[i] and pos == pickup_location:
-                self.item_picked[i] = True
-                rewards[i] += 10
+        for i in range(self.num_agents):
+            if self.done_agents[i]:
+                continue
 
-            elif self.item_picked[i] and pos == self.dropoff_location:
-                self.item_picked[i] = False
-                self.delivered[i] = True
-                rewards[i] += 20
-                infos[i]["delivery"] = "succeeded"
-
-            elif not self.item_picked[i] and pos == self.dropoff_location:
+            if i in collisions:
                 rewards[i] -= 5
-                infos[i]["delivery"] = "failed"
+                new_positions[i] = self.agent_positions[i]
+            else:
+                self.agent_positions[i] = new_positions[i]
+                rewards[i] -= 1
 
-        dones = [self.delivered[i] for i in range(self.num_agents)]
-        return self.get_state(), rewards, dones, infos
+                if self.agent_positions[i] == self.delivery_positions[i]:
+                    rewards[i] += 10
+                    if i not in collisions:
+                        rewards[i] += 5
+                    self.done_agents[i] = True
+
+        done = all(self.done_agents)
+        self.total_steps += 1
+        if self.total_steps >= 100:
+            done = True
+
+        return self._get_obs(), rewards, done, {}
